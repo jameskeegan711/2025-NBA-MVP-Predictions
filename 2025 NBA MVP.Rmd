@@ -1,0 +1,563 @@
+---
+title: "2025 NBA MVP Predictions"
+author: "James Keegan"
+date: '2025-03-03'
+output: html_document
+---
+
+# Loading Libraries
+
+```{R}
+library(tidyverse)
+library(lubridate)
+library(caret)
+library(stats)
+library(ggplot2)
+library(corrplot)
+library(here)
+library(ggthemes)
+library(hoopR)
+library(rvest)
+library(dplyr)
+library(janitor)
+library(stringr)
+library(stringi)
+library(randomForest)
+
+```
+
+# MVP Historical Data
+
+```{R}
+get_mvp_data <- function(year) {
+  url <- paste0("https://www.basketball-reference.com/awards/awards_", year, ".html")
+  
+  page <- read_html(url)
+  
+  mvp_table <- page %>% 
+    html_node("table") %>% 
+    html_table(fill = TRUE)
+  
+  colnames(mvp_table) <- as.character(unlist(mvp_table[1, ])) 
+  mvp_table <- mvp_table[-1, ]  
+  
+  mvp_table <- mvp_table %>%
+    mutate(Year = year)
+  
+  return(mvp_table)
+}
+
+```
+
+```{R}
+years <- 2004:2024
+
+mvp_data <- bind_rows(lapply(years, get_mvp_data))  
+head(mvp_data)
+
+```
+
+```{R}
+# Loading Game Stats from 2004-2024
+nba_players <- hoopR::load_nba_player_box(season = 2004:2024)
+
+advanced_stats <- nba_players %>%
+  filter(season_type == 2) %>%  
+  group_by(season, athlete_id, athlete_display_name) %>%  
+  summarise(
+    TS = sum(points, na.rm = TRUE) / (2 * (sum(field_goals_attempted, na.rm = TRUE) 
+                                           + 0.44 * sum(free_throws_attempted, na.rm = TRUE))), 
+    AST_TOV = sum(assists, na.rm = TRUE) / sum(turnovers, na.rm = TRUE) 
+  ) %>%
+  ungroup() %>%
+  arrange(desc(season), desc(TS))
+head(advanced_stats)
+
+```
+
+```{R}
+mvp_data <- mvp_data %>%
+  mutate(Player = stri_trans_general(Player, "Latin-ASCII"))
+
+# Merging the two data frames
+merged_mvp_data <- mvp_data %>%
+  left_join(advanced_stats, by = c("Year" = "season", "Player" = "athlete_display_name")) %>%
+  rename(Pts_Won = `Pts Won`, Pts_Max = `Pts Max`, FG_Percent = `FG%`, Percent_3 = `3P%`, FT_Percent = `FT%`, WS_48 = `WS/48`) %>%
+  mutate_all(~replace(., . == "", ".000")) %>%
+  dplyr::select(-First, -Pts_Won, -Pts_Max, -Share)
+
+merged_mvp_data$Rank = gsub("T", "", merged_mvp_data$Rank)
+
+print(merged_mvp_data)
+
+```
+
+```{R}
+# Changing variable types from characters to numeric
+merged_mvp_data = merged_mvp_data %>%
+  mutate(Rank = as.numeric(merged_mvp_data$Rank),
+         Age = as.numeric(merged_mvp_data$Age),
+         G = as.numeric(merged_mvp_data$G),
+         MP = as.numeric(merged_mvp_data$MP),
+         PTS = as.numeric(merged_mvp_data$PTS),
+         TRB = as.numeric(merged_mvp_data$TRB),
+         AST = as.numeric(merged_mvp_data$AST),
+         STL = as.numeric(merged_mvp_data$STL),
+         BLK = as.numeric(merged_mvp_data$BLK),
+         FG_Percent = as.numeric(merged_mvp_data$FG_Percent),
+         Percent_3 = as.numeric(merged_mvp_data$Percent_3),
+         FT_Percent = as.numeric(merged_mvp_data$FT_Percent),
+         WS = as.numeric(merged_mvp_data$WS),
+         WS_48 = as.numeric(merged_mvp_data$WS_48),
+         Year = as.numeric(merged_mvp_data$Year),
+         TS = as.numeric(merged_mvp_data$TS),
+         AST_TOV = as.numeric(merged_mvp_data$AST_TOV)) %>%
+  filter(Rank <= 8)
+
+print(merged_mvp_data)
+
+```
+
+# 2025 Top 8 MVP Players Stats
+
+```{R}
+url_2025 <- "https://www.basketball-reference.com/leagues/NBA_2025_per_game.html"
+webpage <- read_html(url_2025)
+
+stats_2025 <- webpage %>%
+  html_nodes("table") %>%    
+  .[[1]] %>%
+  html_table(fill = TRUE)
+print(stats_2025)
+
+```
+
+```{R}
+stats_2025 <- stats_2025 %>%
+  mutate(Player = stri_trans_general(Player, "Latin-ASCII"))
+
+mvp_players = c("Shai Gilgeous-Alexander", "Nikola Jokic", "Giannis Antetokounmpo", "Jayson Tatum", "Victor Wembanyama", "Cade Cunningham", "Stephen Curry", "Karl-Anthony Towns")
+
+mvp_players_stats = stats_2025 %>%
+  filter(Player %in% mvp_players)
+
+print(mvp_players_stats)
+
+```
+
+# MVP Cluster 1
+
+```{R}
+mvp_train_data <- merged_mvp_data %>% filter(Year != 2024)
+mvp_validation <- merged_mvp_data %>% filter(Year == 2024)
+
+```
+
+```{R}
+# Hierarchical Clustering
+mvp_train.data <- as.matrix(mvp_train_data[, c("PTS", "TRB", "AST")])
+mvp_data.scaled <- scale(mvp_train.data)
+
+mvp_data.dist <- dist(mvp_data.scaled)
+mvp_data.hclust <- hclust(d = mvp_data.dist, method = "complete")
+plot(mvp_data.hclust)
+abline(h = 4, lty = 2)
+
+```
+
+```{R}
+# Cluster Creation
+mvp_data.hclust.clusters <- cutree(mvp_data.hclust, k = 6)
+mvp_data_clust <- data.frame(mvp_data.hclust.clusters = as.character(mvp_data.hclust.clusters))
+
+mvp_cluster_summary <- mvp_train_data %>%
+  bind_cols(mvp_data_clust) %>%
+  group_by(mvp_data.hclust.clusters) %>%
+  summarise(
+    PTS = mean(PTS),
+    AST = mean(AST),
+    TRB = mean(TRB),
+    count = n()
+  )
+
+print(mvp_cluster_summary)
+
+```
+
+```{R}
+# Update clusters
+mvp_data_updated <- mvp_train_data %>%
+  bind_cols(mvp_data_clust) %>%
+  mutate(mvp_data.hclust.clusters = case_when(
+    mvp_data.hclust.clusters == "2" ~ "1",
+    mvp_data.hclust.clusters == "5" ~ "3",
+    mvp_data.hclust.clusters == "6" ~ "4",
+    TRUE ~ mvp_data.hclust.clusters
+  ))
+
+mvp_cluster_summary_updated <- mvp_data_updated %>%
+  group_by(mvp_data.hclust.clusters) %>%
+  summarise(
+    PTS = mean(PTS),
+    AST = mean(AST),
+    TRB = mean(TRB),
+    count = n()
+  )
+print(mvp_cluster_summary_updated)
+
+```
+
+```{R}
+# Creating a new, descriptive column for each cluster and adding it to the historical data
+lookup <- tibble(
+  mvp_type_index = as.character(1:4),
+  mvp_types = c("High TRB & Low AST", "", "High PTS & Average AST+TRB","High AST & Average TRB")
+)
+
+mvp_data_final <- mvp_data_updated %>%
+  inner_join(lookup, by = c("mvp_data.hclust.clusters" = "mvp_type_index"))
+
+print(mvp_data_final)
+
+```
+
+# MVP Cluster 2
+
+```{R}
+# Hierarchical Clustering
+mvp_train_data_2 <- merged_mvp_data %>% filter(Year < 2024)
+mvp_validation_2 <- merged_mvp_data %>% filter(Year >= 2024)
+
+mvp_train.data_2 <- as.matrix(mvp_train_data[, c("FG_Percent", "Percent_3", "FT_Percent")])
+mvp_data.scaled_2 <- scale(mvp_train.data_2)
+
+mvp_data.dist_2 <- dist(mvp_data.scaled_2)
+mvp_data.hclust_2 <- hclust(d = mvp_data.dist_2, method = "complete")
+plot(mvp_data.hclust_2)
+abline(h = 4, lty = 2)
+
+```
+
+```{R}
+# Cluster Creation
+mvp_data.hclust.clusters_2 <- cutree(mvp_data.hclust_2, k = 3)
+mvp_data_clust_2 <- data.frame(mvp_data.hclust.clusters_2 = as.character(mvp_data.hclust.clusters_2))
+
+mvp_cluster_summary_2 <- mvp_train_data_2 %>%
+  bind_cols(mvp_data_clust_2) %>%
+  group_by(mvp_data.hclust.clusters_2) %>%
+  summarise(
+    FG_Percent = mean(FG_Percent),
+    Percent_3 = mean(Percent_3),
+    FT_Percent = mean(FT_Percent),
+    count = n()
+  )
+
+print(mvp_cluster_summary_2)
+
+```
+
+```{R}
+# Update clusters
+mvp_data_updated_2 <- mvp_train_data_2 %>%
+  bind_cols(mvp_data_clust_2)
+
+mvp_cluster_summary_updated_2 <- mvp_data_updated_2 %>%
+  group_by(mvp_data.hclust.clusters_2) %>%
+  summarise(
+    FG_Percent = mean(FG_Percent),
+    Percent_3 = mean(Percent_3),
+    FT_Percent = mean(FT_Percent),
+    count = n()
+  )
+print(mvp_cluster_summary_updated_2)
+
+```
+
+```{R}
+# Creating a new, descriptive column for each cluster and adding it to the historical data
+lookup <- tibble(
+  mvp_type_index_2 = as.character(1:3),
+  mvp_types_2 = c("Average Shooter", "Low 3pt & FT Shooter","Bad FG Percent, Good 3pt & FT")
+)
+
+mvp_data_final_2 <- mvp_data_updated_2 %>%
+  inner_join(lookup, by = c("mvp_data.hclust.clusters_2" = "mvp_type_index_2"))
+
+print(mvp_data_final_2)
+
+```
+
+# MVP Cluster 3
+
+```{R}
+# Hierarchical Clustering
+mvp_train_data_3 <- merged_mvp_data %>% filter(Year < 2024)
+mvp_validation_3 <- merged_mvp_data %>% filter(Year >= 2024)
+
+mvp_train.data_3 <- as.matrix(mvp_train_data[, c("WS_48", "TS", "AST_TOV")])
+mvp_data.scaled_3 <- scale(mvp_train.data_3)
+
+mvp_data.dist_3 <- dist(mvp_data.scaled_3)
+mvp_data.hclust_3 <- hclust(d = mvp_data.dist_3, method = "complete")
+plot(mvp_data.hclust_3)
+abline(h = 4, lty = 2)
+
+```
+
+```{R}
+# Cluster Creation
+mvp_data.hclust.clusters_3 <- cutree(mvp_data.hclust_3, k = 6)
+mvp_data_clust_3 <- data.frame(mvp_data.hclust.clusters_3 = as.character(mvp_data.hclust.clusters_3))
+
+mvp_cluster_summary_3 <- mvp_train_data_3 %>%
+  bind_cols(mvp_data_clust_3) %>%
+  group_by(mvp_data.hclust.clusters_3) %>%
+  summarise(
+    WS_48 = mean(WS_48),
+    TS = mean(TS),
+    AST_TOV = mean(AST_TOV),
+    count = n()
+  )
+
+print(mvp_cluster_summary_3)
+
+```
+
+```{R}
+# Update clusters
+mvp_data_updated_3 <- mvp_train_data_3 %>%
+  bind_cols(mvp_data_clust_3) %>%
+  mutate(mvp_data.hclust.clusters_3 = case_when(
+    mvp_data.hclust.clusters_3 == "6" ~ "1",
+    mvp_data.hclust.clusters_3 == "3" ~ "2",
+    mvp_data.hclust.clusters_3 == "5" ~ "4",
+    TRUE ~ mvp_data.hclust.clusters_3
+  ))
+
+mvp_cluster_summary_updated_3 <- mvp_data_updated_3 %>%
+  group_by(mvp_data.hclust.clusters_3) %>%
+  summarise(
+    WS_48 = mean(WS_48),
+    TS = mean(TS),
+    AST_TOV = mean(AST_TOV),
+    count = n()
+  )
+print(mvp_cluster_summary_updated_3)
+
+```
+
+```{R}
+# Creating a new, descriptive column for each cluster and adding it to the historical data
+lookup <- tibble(
+  mvp_type_index_3 = as.character(1:4),
+  mvp_types_3 = c("High WS/48,TS & Low AST_TOV", "High TS & Low WS/48,AST_TOV", "","High TS & Average WS_48 & High AST_TOV")
+)
+
+mvp_data_final_3 <- mvp_data_updated_3 %>%
+  inner_join(lookup, by = c("mvp_data.hclust.clusters_3" = "mvp_type_index_3")) %>%
+
+print(mvp_data_final_3)
+
+```
+
+# MVP Model 1 Creation
+
+```{R}
+# Creating new data frame to run model
+mvp_exclude_data = mvp_data_final %>%
+  dplyr::select(-Player, -Tm, -athlete_id, -mvp_data.hclust.clusters)
+
+mvp_exclude_data$mvp_types = as.factor(mvp_exclude_data$mvp_types)
+
+# re-training the data
+lm_mvp_train_data <- mvp_exclude_data %>% filter(Year != 2023)
+lm_mvp_validation <- mvp_exclude_data %>% filter(Year == 2023)
+
+```
+
+```{R}
+mvp_lm_model <- lm(Rank ~ ., data = lm_mvp_train_data)
+summary(mvp_lm_model)
+
+```
+
+```{R}
+# Calculating MSE
+mvp_predictions <- predict(mvp_lm_model, newdata = lm_mvp_validation)
+
+mvp_mse = mean((lm_mvp_validation$Rank - mvp_predictions)^2)
+print(mvp_mse)
+
+```
+
+# MVP Model 2 Creation
+
+```{R}
+# Creating new data frame to run model
+mvp_exclude_data_2 = mvp_data_final_2 %>%
+  dplyr::select(-Player, -Tm, -athlete_id, -mvp_data.hclust.clusters_2)
+
+mvp_exclude_data_2$mvp_types_2 = as.factor(mvp_exclude_data_2$mvp_types_2)
+
+# re-training the data
+lm_mvp_train_data_2 <- mvp_exclude_data_2 %>% filter(Year != 2023)
+lm_mvp_validation_2 <- mvp_exclude_data_2 %>% filter(Year == 2023)
+
+```
+
+```{R}
+mvp_lm_model_2 <- lm(Rank ~ ., data = lm_mvp_train_data_2)
+summary(mvp_lm_model_2)
+
+```
+
+```{R}
+# Calculating MSE
+mvp_predictions_2 <- predict(mvp_lm_model_2, newdata = lm_mvp_validation_2)
+
+mvp_mse_2 = mean((lm_mvp_validation_2$Rank - mvp_predictions_2)^2)
+print(mvp_mse_2)
+
+```
+
+# MVP Model 3 Creation
+
+```{R}
+# Creating new data frame to run model
+mvp_exclude_data_3 = mvp_data_final_3 %>%
+  dplyr::select(-Player, -Tm, -athlete_id, -mvp_data.hclust.clusters_3)
+
+mvp_exclude_data_3$mvp_types_3 = as.factor(mvp_exclude_data_3$mvp_types_3)
+
+# re-training the data
+lm_mvp_train_data_3 <- mvp_exclude_data_3 %>% filter(Year != 2023)
+lm_mvp_validation_3 <- mvp_exclude_data_3 %>% filter(Year == 2023)
+
+```
+
+```{R}
+mvp_lm_model_3 <- lm(Rank ~ ., data = lm_mvp_train_data_3)
+summary(mvp_lm_model_3)
+
+```
+
+```{R}
+# Calculating MSE
+mvp_predictions_3 <- predict(mvp_lm_model_3, newdata = lm_mvp_validation_3)
+
+mvp_mse_3 = mean((lm_mvp_validation_3$Rank - mvp_predictions_3)^2)
+print(mvp_mse_3)
+
+```
+
+# Applying the 2025 Stats to Model
+
+```{R}
+updated_mvp_players_stats = mvp_players_stats %>%
+  mutate(
+    WS = mean(merged_mvp_data$WS),
+    WS_48 = mean(merged_mvp_data$WS_48),
+    TS = PTS / (2 * (FGA + 0.44 * FTA)), 
+    AST_TOV = AST/TOV,
+    Year = 2025)
+updated_mvp_players_stats
+
+```
+
+# Model 1 Prediction
+
+```{R}
+# Preparing Data
+mvp_players = updated_mvp_players_stats %>%
+  rename(FG_Percent = `FG%`,
+         Percent_3 = `3P%`,
+         FT_Percent = `FT%`) %>%
+  dplyr::select(Age, G, MP, PTS, TRB, AST, STL, BLK, FG_Percent, Percent_3, FT_Percent, Year, WS, WS_48, TS, AST_TOV)
+
+mvp_player_type = c("High PTS & Average AST+TRB", "High TRB & Low AST", "High TRB & Low AST", "High TRB & Low AST", "High AST & Average TRB", "High TRB & Low AST", "High TRB & Low AST", "High AST & Average TRB")
+
+mvp_players$mvp_types = mvp_player_type
+
+mvp_players
+
+```
+
+```{R}
+# Predicting rank
+predicted_ranks <- predict(mvp_lm_model, newdata = mvp_players)
+
+mvp_players_stats$Predicted_Rank <- predicted_ranks
+mvp_players_stats
+
+```
+
+# Model 2 Prediction
+
+```{R}
+# Preparing Data
+mvp_players_2 = updated_mvp_players_stats %>%
+  rename(FG_Percent = `FG%`,
+         Percent_3 = `3P%`,
+         FT_Percent = `FT%`) %>%
+  dplyr::select(Age, G, MP, PTS, TRB, AST, STL, BLK, FG_Percent, Percent_3, FT_Percent, Year, WS, WS_48, TS, AST_TOV)
+
+mvp_player_type_2 = c("Average Shooter", "Low 3pt & FT Shooter", "Average Shooter", "Bad FG Percent, Good 3pt & FT", "Bad FG Percent, Good 3pt & FT", "Average Shooter", "Bad FG Percent, Good 3pt & FT", "Bad FG Percent, Good 3pt & FT")
+
+mvp_players_2$mvp_types_2 = mvp_player_type_2
+
+mvp_players_2
+
+```
+
+```{R}
+# Predicting rank
+predicted_ranks_2 <- predict(mvp_lm_model_2, newdata = mvp_players_2)
+
+mvp_players_stats$Predicted_Rank_2 <- predicted_ranks_2
+mvp_players_stats
+
+```
+
+# Model 3 Predction and Final Weighted Average Rank
+
+```{R}
+# Preparing Data
+mvp_players_3 = updated_mvp_players_stats %>%
+  rename(FG_Percent = `FG%`,
+         Percent_3 = `3P%`,
+         FT_Percent = `FT%`) %>%
+  dplyr::select(Age, G, MP, PTS, TRB, AST, STL, BLK, FG_Percent, Percent_3, FT_Percent, Year, WS, WS_48, TS, AST_TOV)
+
+mvp_player_type_3 = c("High WS/48,TS & Low AST_TOV", "High WS/48,TS & Low AST_TOV", "High TS & Average WS_48 & High AST_TOV", "High WS/48,TS & Low AST_TOV", "High TS & Low WS/48,AST_TOV", "High TS & Low WS/48,AST_TOV", "High TS & Low WS/48,AST_TOV", "High WS/48,TS & Low AST_TOV")
+
+mvp_players_3$mvp_types_3 = mvp_player_type_3
+
+mvp_players_3
+
+```
+
+```{R}
+# Predicting rank
+predicted_ranks_3 <- predict(mvp_lm_model_3, newdata = mvp_players_3)
+
+mvp_players_stats$Predicted_Rank_3 <- predicted_ranks_3
+
+# Setting weights based on MSE 
+mvp_weight = 1/mvp_mse
+mvp_weight_2 = 1/mvp_mse_2
+mvp_weight_3 = 1/mvp_mse_3
+mvp_total_weight = mvp_weight + mvp_weight_2 + mvp_weight_3
+
+mvp_normalized_weight = mvp_weight / mvp_total_weight
+mvp_normalized_weight_2 = mvp_weight_2 / mvp_total_weight
+mvp_normalized_weight_3 = mvp_weight_3 / mvp_total_weight
+
+# Applying weights to averages and finding a true weighted average
+mvp_players_stats = mvp_players_stats %>%
+  mutate(Average_Rank = (Predicted_Rank * mvp_normalized_weight) + (Predicted_Rank_2 * mvp_normalized_weight_2) + (Predicted_Rank_3 * mvp_normalized_weight_3)) %>%
+  arrange(Average_Rank) %>%
+  dplyr::select(Player, Predicted_Rank, Predicted_Rank_2, Predicted_Rank_3, Average_Rank)
+mvp_players_stats
+
+```
